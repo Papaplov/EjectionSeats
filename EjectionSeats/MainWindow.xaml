@@ -44,7 +44,7 @@
                     <TextBox x:Name="txtImpulse" Text="18000"/>
 
                     <TextBlock Text="Время работы двигателя (с)" Margin="0,5,0,0"/>
-                    <TextBox x:Name="txtBurnTime" Text="0.25"/>
+                    <TextBox x:Name="txtBurnTime" Text="0.22"/>
 
                     <TextBlock Text="Угол направляющих (градусы от вертикали)" Margin="0,5,0,0"/>
                     <TextBox x:Name="txtRailAngle" Text="15"/>
