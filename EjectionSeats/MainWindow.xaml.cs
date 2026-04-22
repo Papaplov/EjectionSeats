@@ -1,470 +1,855 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
-using EjectionSeats.Physics;
+using OxyPlot;
+using OxyPlot.Series;
+using OxyPlot.Axes;
 
 namespace EjectionSeats
 {
     public partial class MainWindow : Window
     {
-        private List<TrajectoryPoint> trajectory = new List<TrajectoryPoint>();
-        private double maxX, maxY, minY, minX;
-        private double burnTimeValue = 0.22;
+        // Полный вектор состояния
+        public class StateVector
+        {
+            public double X { get; set; }
+            public double Y { get; set; }
+            public double Z { get; set; }
+            public double Vx { get; set; }
+            public double Vy { get; set; }
+            public double Vz { get; set; }
+            public double Theta { get; set; }
+            public double Psi { get; set; }
+            public double Omega { get; set; }
+            public double Time { get; set; }
+            public double Pressure { get; set; }
+        }
 
-        // Параметры масштабирования
-        private double scale = 1.0;  // Единый масштаб для X и Y
-        private double offsetX = 0;
-        private double offsetY = 0;
+        private List<StateVector> trajectory;
+        private double g = 9.81;
 
-        // Размеры области отображения
-        private double marginLeft = 70;
-        private double marginRight = 40;
-        private double marginTop = 40;
-        private double marginBottom = 60;
-        private double plotW, plotH;
+        // Переменные для масштабирования
+        private double zoomLevel = 1.0;
+        private double panX = 0;
+        private double panY = 0;
+        private bool isPanning = false;
+        private Point lastMousePos;
 
         public MainWindow()
         {
             InitializeComponent();
-            this.SizeChanged += (s, e) => { if (trajectory.Count > 0) DrawTrajectory(); };
+
+            Thread.CurrentThread.CurrentCulture = new CultureInfo("ru-RU");
+            Thread.CurrentThread.CurrentUICulture = new CultureInfo("ru-RU");
+
+            // Подписываемся на события мыши для Canvas
+            Canvas3D.MouseWheel += Canvas3D_MouseWheel;
+            Canvas3D.MouseLeftButtonDown += Canvas3D_MouseLeftButtonDown;
+            Canvas3D.MouseLeftButtonUp += Canvas3D_MouseLeftButtonUp;
+            Canvas3D.MouseMove += Canvas3D_MouseMove;
+            Canvas3D.MouseRightButtonDown += Canvas3D_MouseRightButtonDown;
         }
 
-        private void OnSimulateClick(object sender, RoutedEventArgs e)
+        private double ParseDouble(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return 0;
+            text = text.Replace(',', '.');
+            return double.Parse(text, CultureInfo.InvariantCulture);
+        }
+
+        private void BtnCalculate_Click(object sender, RoutedEventArgs e)
         {
             try
             {
-                // Считывание параметров
-                double alt = double.Parse(txtHeight.Text);
-                double speed = double.Parse(txtSpeed.Text);
-                double pitch = double.Parse(txtPitch.Text);
-                double bank = double.Parse(txtBank.Text);
-                double mass = double.Parse(txtMass.Text);
-                double area = double.Parse(txtArea.Text);
-                double cx = double.Parse(txtCx.Text);
-                double impulse = double.Parse(txtImpulse.Text);
-                burnTimeValue = double.Parse(txtBurnTime.Text);
-                double railAngle = double.Parse(txtRailAngle.Text);
-                double chuteDelay = double.Parse(txtChuteDelay.Text);
-                double chuteArea = double.Parse(txtChuteArea.Text);
+                if (!TryParseInputs(out double Vc, out double H, out double pitchDeg, out double M, out double chiDeg,
+                                    out double Jz, out double S_cm, out double L_cm, out double W0, out double T1,
+                                    out double Mz, out double R_gas, out double T_rd, out double t_rd, out double e_rd,
+                                    out double Cx, out double S_mid, out double mz_coef, out double Lk))
+                    return;
 
-                // Проверка
-                if (alt < 0) throw new Exception("Высота не может быть отрицательной");
-                if (speed < 0) throw new Exception("Скорость не может быть отрицательной");
-                if (mass <= 0) throw new Exception("Масса должна быть положительной");
+                CalculateTrajectory(Vc, H, pitchDeg, M, chiDeg, Jz, S_cm, L_cm, W0, T1,
+                                   Mz, R_gas, T_rd, t_rd, e_rd, Cx, S_mid, mz_coef, Lk);
 
-                // Запуск моделирования
-                var model = new EjectionModel(alt, speed, pitch, bank, mass, area, cx,
-                                               impulse, burnTimeValue, railAngle, chuteDelay, chuteArea);
-                model.RunSimulation(maxTime: 40.0, dt: 0.02);
-                trajectory = model.Points;
+                // Сбрасываем зум и панорамирование
+                zoomLevel = 1.0;
+                panX = 0;
+                panY = 0;
 
-                if (trajectory.Count == 0)
-                    throw new Exception("Моделирование не дало результатов");
-
-                // Поиск границ
-                maxX = trajectory.Max(p => p.X);
-                minX = trajectory.Min(p => p.X);
-                maxY = trajectory.Max(p => p.Y);
-                minY = trajectory.Min(p => p.Y);
-
-                // Добавляем запас по краям 5%
-                double paddingX = maxX * 0.05;
-                double paddingY = maxY * 0.05;
-                minX = Math.Max(0, minX - paddingX);
-                maxX = maxX + paddingX;
-                minY = Math.Max(0, minY - paddingY);
-                maxY = maxY + paddingY;
-
-                if (maxX < 10) maxX = 10;
-                if (maxY < 10) maxY = 10;
-
-                // Сбрасываем масштаб
-                scale = 1.0;
-                offsetX = 0;
-                offsetY = 0;
-
-                DrawTrajectory();
-
-                txtStatus.Text = $"Расчёт завершён. Дальность: {trajectory[trajectory.Count - 1].X:F0} м, " +
-                                 $"Время полёта: {trajectory[trajectory.Count - 1].Time:F1} с, " +
-                                 $"Макс. высота: {maxY - paddingY:F0} м\n" +
-                                 $"Масштаб: 1 см на экране = {(maxY / plotH):F1} м (нажмите кнопки +/- для изометрического масштаба)";
+                DrawTrajectory(Vc);
+                DrawOxyPlots();
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Ошибка: {ex.Message}", "Ошибка",
-                                MessageBoxButton.OK, MessageBoxImage.Error);
-                txtStatus.Text = "Ошибка";
+                MessageBox.Show($"Ошибка при расчете: {ex.Message}", "Ошибка",
+                               MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
-        private void DrawTrajectory()
+        private void CalculateTrajectory(double Vc, double H, double pitchDeg, double M, double chiDeg,
+                                         double Jz, double S_cm, double L_cm, double W0, double T1,
+                                         double Mz, double R_gas, double T_rd, double t_rd, double e_rd,
+                                         double Cx, double S_mid, double mz_coef, double Lk)
         {
-            canvasTrajectory.Children.Clear();
-            if (trajectory.Count < 2) return;
+            double chi = chiDeg * Math.PI / 180.0;
+            double pitch = pitchDeg * Math.PI / 180.0;
 
-            double w = canvasTrajectory.ActualWidth;
-            double h = canvasTrajectory.ActualHeight;
-            if (w <= 0 || h <= 0) return;
-
-            plotW = w - marginLeft - marginRight;
-            plotH = h - marginTop - marginBottom;
-
-            // Вычисляем масштаб для изометрического отображения
-            double rangeX = maxX - minX;
-            double rangeY = maxY - minY;
-            if (rangeX <= 0) rangeX = 1;
-            if (rangeY <= 0) rangeY = 1;
-
-            // Масштаб по X и Y в пикселях на метр
-            double scaleXPixelsPerMeter = plotW / rangeX;
-            double scaleYPixelsPerMeter = plotH / rangeY;
-
-            // Используем минимальный масштаб, чтобы оба измерения поместились
-            // Умножаем на scale (который может менять пользователь кнопками)
-            double pixelsPerMeter = Math.Min(scaleXPixelsPerMeter, scaleYPixelsPerMeter) * scale;
-
-            // Вычисляем видимые диапазоны с учётом единого масштаба
-            double visibleRangeX = plotW / pixelsPerMeter;
-            double visibleRangeY = plotH / pixelsPerMeter;
-
-            // Центрируем траекторию
-            double centerX = (minX + maxX) / 2;
-            double centerY = (minY + maxY) / 2;
-
-            double viewMinX = centerX - visibleRangeX / 2 + offsetX * rangeX;
-            double viewMaxX = viewMinX + visibleRangeX;
-            double viewMinY = centerY - visibleRangeY / 2 + offsetY * rangeY;
-            double viewMaxY = viewMinY + visibleRangeY;
-
-            // Функция преобразования координат
-            Func<double, double, Point> map = (xWorld, yWorld) =>
+            StateVector current = new StateVector()
             {
-                double px = marginLeft + (xWorld - viewMinX) * pixelsPerMeter;
-                double py = marginTop + plotH - (yWorld - viewMinY) * pixelsPerMeter;
-                return new Point(px, py);
+                X = 0,
+                Y = H,
+                Z = 0,
+                Vx = Vc,
+                Vy = 0,
+                Vz = 0,
+                Theta = 0,
+                Psi = chi + pitch,
+                Omega = 0,
+                Time = 0,
+                Pressure = 0
             };
+
+            trajectory = new List<StateVector> { current };
+
+            double dt = 0.01;
+            double totalTime = 5.0;
+            double rho = GetAirDensity(H);
+            double maxOverload = 0;
+
+            for (double t = 0; t < totalTime; t += dt)
+            {
+                rho = GetAirDensity(current.Y);
+                double V_abs = Math.Sqrt(current.Vx * current.Vx + current.Vy * current.Vy);
+
+                // Сила СМ (Стреляющий Механизм) - формулы 7.2, 7.15
+                double F_cm = 0;
+                double L_cm_used = Math.Abs(current.X);
+
+                if (L_cm_used < L_cm)
+                {
+                    double numerator = R_gas * Mz * T1 - 0.1 * M * V_abs * V_abs;
+                    double denominator = W0 + S_cm * L_cm_used;
+                    current.Pressure = (denominator > 0 && numerator > 0) ? numerator / denominator : 0;
+                    F_cm = current.Pressure * S_cm;
+                }
+                else
+                {
+                    current.Pressure = 0;
+                    F_cm = 0;
+                }
+
+                double F_cm_x = F_cm * Math.Cos(current.Psi);
+                double F_cm_y = F_cm * Math.Sin(current.Psi);
+
+                // Сила РД (Ракетный Двигатель) - формулы 7.32, 7.33
+                double F_rd = (t <= t_rd) ? T_rd : 0;
+                double T_x = F_rd * Math.Cos(current.Psi);
+                double T_y = F_rd * Math.Sin(current.Psi);
+                double M_rd = F_rd * e_rd;
+
+                // Аэродинамика - формулы 7.30, 7.31
+                double Alpha = current.Psi - current.Theta;
+                double F_a = 0.5 * Cx * S_mid * rho * V_abs * V_abs;
+                double F_ax = -F_a * Math.Cos(current.Theta);
+                double F_ay = -F_a * Math.Sin(current.Theta);
+                double M_a = mz_coef * Lk * S_mid * 0.5 * rho * V_abs * V_abs * Math.Sign(Alpha);
+
+                // Сумма сил
+                double F_sum_x = F_ax + T_x + F_cm_x;
+                double F_sum_y = F_ay + T_y + F_cm_y - M * g;
+
+                double a_x = F_sum_x / M;
+                double a_y = F_sum_y / M;
+
+                double M_sum = M_a + M_rd;
+                double Eps_z = M_sum / Jz;
+
+                // Перегрузка - формула 7.5
+                double a_total = Math.Sqrt(a_x * a_x + (a_y + g) * (a_y + g));
+                double n_current = a_total / g;
+                if (n_current > maxOverload) maxOverload = n_current;
+
+                // Интегрирование Эйлера - формулы 7.55, 7.56, 7.57
+                StateVector next = new StateVector
+                {
+                    Time = current.Time + dt,
+                    Vx = current.Vx + a_x * dt,
+                    Vy = current.Vy + a_y * dt,
+                    Vz = 0
+                };
+
+                double Vx_avg = (current.Vx + next.Vx) / 2.0;
+                double Vy_avg = (current.Vy + next.Vy) / 2.0;
+
+                next.X = current.X + Vx_avg * dt;
+                next.Y = current.Y + Vy_avg * dt;
+                next.Z = 0;
+
+                next.Omega = current.Omega + Eps_z * dt;
+                double Omega_avg = (current.Omega + next.Omega) / 2.0;
+                next.Psi = current.Psi + Omega_avg * dt;
+                next.Theta = Math.Atan2(next.Vy, next.Vx);
+                next.Pressure = current.Pressure;
+
+                if (next.Y < 0) break;
+
+                trajectory.Add(next);
+                current = next;
+            }
+
+            double maxHeight = trajectory.Max(s => s.Y) - H;
+            double absoluteMaxHeight = trajectory.Max(s => s.Y);
+
+            txtStatus.Text = $"Время полета: {current.Time:F2} с";
+            txtMaxOverload.Text = $"Макс. перегрузка: {maxOverload:F2} ед.";
+            txtMaxHeight.Text = $"Подъем: {maxHeight:F2} м (абс. {absoluteMaxHeight:F0} м)";
+        }
+
+        private void DrawTrajectory(double Vc)
+        {
+            Canvas3D.Children.Clear();
+            if (trajectory == null || trajectory.Count < 2) return;
+
+            double width = Canvas3D.ActualWidth;
+            double height = Canvas3D.ActualHeight;
+            if (width < 10) width = 600;
+            if (height < 10) height = 400;
+
+            double H0 = trajectory[0].Y;
+
+            // Пересчет в самолетную СК: X1 = Vc*t - X, Y1 = Y - H0 (формула 7.37)
+            var relativePoints = trajectory.Select(p => new Point(
+                Vc * p.Time - p.X,
+                p.Y - H0
+            )).ToList();
+
+            // Границы данных
+            double dataMinX = relativePoints.Min(p => p.X);
+            double dataMaxX = relativePoints.Max(p => p.X);
+            double dataMinY = Math.Min(-5, relativePoints.Min(p => p.Y));
+            double dataMaxY = relativePoints.Max(p => p.Y) + 5;
+
+            // Добавляем отступы
+            double margin = 50;
+            double dataRangeX = dataMaxX - dataMinX;
+            double dataRangeY = dataMaxY - dataMinY;
+
+            if (dataRangeX < 1) dataRangeX = 10;
+            if (dataRangeY < 1) dataRangeY = 10;
+
+            // Функция преобразования координат с учетом зума и панорамирования
+            Point TransformPoint(Point pt)
+            {
+                // Нормализация
+                double normX = (pt.X - dataMinX) / dataRangeX;
+                double normY = (pt.Y - dataMinY) / dataRangeY;
+
+                // Применение зума и панорамирования
+                normX = normX * zoomLevel + panX;
+                normY = normY * zoomLevel + panY;
+
+                // Преобразование в координаты Canvas
+                double canvasX = margin + normX * (width - 2 * margin);
+                double canvasY = height - margin - normY * (height - 2 * margin);
+
+                return new Point(canvasX, canvasY);
+            }
+
+            // Белый фон
+            Rectangle background = new Rectangle
+            {
+                Width = width,
+                Height = height,
+                Fill = Brushes.White
+            };
+            Canvas.SetLeft(background, 0);
+            Canvas.SetTop(background, 0);
+            Canvas3D.Children.Add(background);
 
             // Рисуем сетку
-            DrawGridAndAxes(marginLeft, marginTop, plotW, plotH, viewMinX, viewMaxX, viewMinY, viewMaxY, pixelsPerMeter);
+            DrawGrid(dataMinX, dataMaxX, dataMinY, dataMaxY, width, height, margin, TransformPoint);
 
-            // Рисуем траекторию
-            DrawColoredTrajectory(map);
+            // Рисуем самолет в точке (0,0) относительных координат
+            Point planePos = TransformPoint(new Point(0, 0));
+            DrawAirplane(planePos, H0);
 
-            // Рисуем ключевые точки
-            DrawKeyPoints(map);
-
-            // Рисуем легенду
-            DrawLegend(marginLeft, marginTop);
-
-            // Добавляем кнопки масштабирования
-            AddZoomControls();
-        }
-
-        private void DrawGridAndAxes(double left, double top, double plotW, double plotH,
-                                      double viewMinX, double viewMaxX, double viewMinY, double viewMaxY,
-                                      double pixelsPerMeter)
-        {
-            // Оси
-            Line xAxis = new Line { X1 = left, Y1 = top + plotH, X2 = left + plotW, Y2 = top + plotH, Stroke = Brushes.Black, StrokeThickness = 2 };
-            Line yAxis = new Line { X1 = left, Y1 = top, X2 = left, Y2 = top + plotH, Stroke = Brushes.Black, StrokeThickness = 2 };
-            canvasTrajectory.Children.Add(xAxis);
-            canvasTrajectory.Children.Add(yAxis);
-
-            // Подписи осей
-            TextBlock xLabel = new TextBlock { Text = "Дальность (м)", FontSize = 11, FontWeight = FontWeights.Bold };
-            Canvas.SetLeft(xLabel, left + plotW / 2 - 40);
-            Canvas.SetTop(xLabel, top + plotH + 25);
-            canvasTrajectory.Children.Add(xLabel);
-
-            TextBlock yLabel = new TextBlock { Text = "Высота (м)", FontSize = 11, FontWeight = FontWeights.Bold };
-            Canvas.SetLeft(yLabel, left - 50);
-            Canvas.SetTop(yLabel, top + plotH / 2 - 10);
-            canvasTrajectory.Children.Add(yLabel);
-
-            // Сетка по X с шагом 100, 200, 500 м
-            double stepX = GetNiceStep(Math.Abs(viewMaxX - viewMinX));
-            double startX = Math.Floor(viewMinX / stepX) * stepX;
-            for (double xVal = startX; xVal <= viewMaxX; xVal += stepX)
+            // Траектория
+            Polyline trajectoryLine = new Polyline
             {
-                if (xVal < viewMinX - stepX / 2) continue;
-                if (xVal > viewMaxX + stepX / 2) break;
+                Stroke = Brushes.Red,
+                StrokeThickness = 3
+            };
 
-                double xPix = left + (xVal - viewMinX) * pixelsPerMeter;
-                if (xPix < left || xPix > left + plotW) continue;
+            foreach (var pt in relativePoints)
+            {
+                trajectoryLine.Points.Add(TransformPoint(pt));
+            }
+            Canvas3D.Children.Add(trajectoryLine);
 
-                Line gridLine = new Line
+            // Старт и конец
+            DrawMarker(TransformPoint(relativePoints[0]), Colors.Green, 8, "Старт");
+            DrawMarker(TransformPoint(relativePoints.Last()), Colors.Blue, 8, "Конец");
+
+            // Маркеры времени
+            for (int i = 0; i < trajectory.Count; i += (int)(0.5 / 0.01))
+            {
+                if (i < trajectory.Count)
                 {
-                    X1 = xPix,
-                    Y1 = top,
-                    X2 = xPix,
-                    Y2 = top + plotH,
-                    Stroke = Brushes.LightGray,
-                    StrokeThickness = 0.5
-                };
-                gridLine.StrokeDashArray = new DoubleCollection { 3, 3 };
-                canvasTrajectory.Children.Add(gridLine);
-
-                // Подпись только если есть место
-                if (xPix > left + 20 && xPix < left + plotW - 20)
-                {
-                    TextBlock lbl = new TextBlock { Text = $"{xVal:F0}", FontSize = 8, Foreground = Brushes.DarkSlateGray };
-                    Canvas.SetLeft(lbl, xPix - 12);
-                    Canvas.SetTop(lbl, top + plotH + 3);
-                    canvasTrajectory.Children.Add(lbl);
+                    Point pt = TransformPoint(relativePoints[i]);
+                    Ellipse marker = new Ellipse
+                    {
+                        Width = 5,
+                        Height = 5,
+                        Fill = Brushes.Orange,
+                        Stroke = Brushes.White,
+                        StrokeThickness = 1
+                    };
+                    Canvas.SetLeft(marker, pt.X - 2.5);
+                    Canvas.SetTop(marker, pt.Y - 2.5);
+                    Canvas3D.Children.Add(marker);
                 }
             }
 
-            // Сетка по Y с тем же шагом (изометрически)
-            double stepY = stepX; // Одинаковый шаг для X и Y
-            double startY = Math.Floor(viewMinY / stepY) * stepY;
-            for (double yVal = startY; yVal <= viewMaxY; yVal += stepY)
+            // Подписи осей с единицами измерения
+            TextBlock titleX = new TextBlock
             {
-                if (yVal < viewMinY - stepY / 2) continue;
-                if (yVal > viewMaxY + stepY / 2) break;
+                Text = "← Продольное перемещение X (м) →",
+                FontSize = 12,
+                FontWeight = System.Windows.FontWeights.Bold
+            };
+            Canvas.SetLeft(titleX, width / 2 - 120);
+            Canvas.SetTop(titleX, height - 20);
+            Canvas3D.Children.Add(titleX);
 
-                double yPix = top + plotH - (yVal - viewMinY) * pixelsPerMeter;
-                if (yPix < top || yPix > top + plotH) continue;
+            TextBlock titleY = new TextBlock
+            {
+                Text = "↑ Относительная высота Y (м) ↓",
+                FontSize = 12,
+                FontWeight = System.Windows.FontWeights.Bold,
+                RenderTransform = new RotateTransform(-90)
+            };
+            Canvas.SetLeft(titleY, 5);
+            Canvas.SetTop(titleY, height / 2 - 80);
+            Canvas3D.Children.Add(titleY);
 
-                Line gridLine = new Line
-                {
-                    X1 = left,
-                    Y1 = yPix,
-                    X2 = left + plotW,
-                    Y2 = yPix,
-                    Stroke = Brushes.LightGray,
-                    StrokeThickness = 0.5
-                };
-                gridLine.StrokeDashArray = new DoubleCollection { 3, 3 };
-                canvasTrajectory.Children.Add(gridLine);
-
-                // Подпись только если есть место
-                if (yPix > top + 15 && yPix < top + plotH - 10)
-                {
-                    TextBlock lbl = new TextBlock { Text = $"{yVal:F0}", FontSize = 8, Foreground = Brushes.DarkSlateGray };
-                    Canvas.SetLeft(lbl, left - 35);
-                    Canvas.SetTop(lbl, yPix - 6);
-                    canvasTrajectory.Children.Add(lbl);
-                }
-            }
-
-            // Добавляем информацию о масштабе в угол
+            // Информация о масштабе и смещении
             TextBlock scaleInfo = new TextBlock
             {
-                Text = $"Масштаб: 1 см ↔ {(100 / pixelsPerMeter):F1} м",
-                FontSize = 8,
-                Foreground = Brushes.Gray,
-                Background = new SolidColorBrush(Color.FromArgb(200, 255, 255, 255)),
-                Padding = new Thickness(3)
+                Text = $"Масштаб: {zoomLevel:F1}x | Смещение: ({panX:F2}, {panY:F2})",
+                FontSize = 9,
+                Foreground = Brushes.Gray
             };
-            Canvas.SetRight(scaleInfo, 10);
-            Canvas.SetBottom(scaleInfo, 5);
-            canvasTrajectory.Children.Add(scaleInfo);
-        }
+            Canvas.SetLeft(scaleInfo, 10);
+            Canvas.SetTop(scaleInfo, 10);
+            Canvas3D.Children.Add(scaleInfo);
 
-        private double GetNiceStep(double range)
-        {
-            // Выбираем красивый шаг сетки: 10, 20, 50, 100, 200, 500, 1000...
-            double rawStep = range / 8;
-            double exponent = Math.Pow(10, Math.Floor(Math.Log10(rawStep)));
-            double fraction = rawStep / exponent;
-
-            if (fraction < 1.5) return 1 * exponent;
-            if (fraction < 3.5) return 2 * exponent;
-            if (fraction < 7.5) return 5 * exponent;
-            return 10 * exponent;
-        }
-
-        private void DrawColoredTrajectory(Func<double, double, Point> map)
-        {
-            if (trajectory.Count < 2) return;
-
-            // Разбиваем на сегменты
-            List<TrajectoryPoint> rocketPhase = new List<TrajectoryPoint>();
-            List<TrajectoryPoint> freePhase = new List<TrajectoryPoint>();
-            List<TrajectoryPoint> chutePhase = new List<TrajectoryPoint>();
-
-            bool rocketFinished = false;
-            bool chuteDeployed = false;
-
-            foreach (var p in trajectory)
+            // Информация о начальной высоте
+            TextBlock infoH = new TextBlock
             {
-                if (!rocketFinished && p.Time <= burnTimeValue)
-                {
-                    rocketPhase.Add(p);
-                }
-                else if (!rocketFinished)
-                {
-                    rocketFinished = true;
-                }
-
-                if (rocketFinished && !chuteDeployed)
-                {
-                    if (!p.ParachuteDeployed)
-                        freePhase.Add(p);
-                    else
-                    {
-                        chuteDeployed = true;
-                        if (freePhase.Count > 0 && freePhase.Last() != p)
-                            freePhase.Add(p);
-                        chutePhase.Add(p);
-                    }
-                }
-                else if (chuteDeployed)
-                {
-                    chutePhase.Add(p);
-                }
-            }
-
-            // Красный - работа двигателя
-            if (rocketPhase.Count > 1)
-            {
-                Polyline line = new Polyline { Stroke = Brushes.Red, StrokeThickness = 3 };
-                foreach (var p in rocketPhase)
-                    line.Points.Add(map(p.X, p.Y));
-                canvasTrajectory.Children.Add(line);
-            }
-
-            // Синий - свободный полёт
-            if (freePhase.Count > 1)
-            {
-                Polyline line = new Polyline { Stroke = Brushes.DodgerBlue, StrokeThickness = 2.5 };
-                foreach (var p in freePhase)
-                    line.Points.Add(map(p.X, p.Y));
-                canvasTrajectory.Children.Add(line);
-            }
-
-            // Зелёный - парашют
-            if (chutePhase.Count > 1)
-            {
-                Polyline line = new Polyline { Stroke = Brushes.ForestGreen, StrokeThickness = 2.5 };
-                foreach (var p in chutePhase)
-                    line.Points.Add(map(p.X, p.Y));
-                canvasTrajectory.Children.Add(line);
-            }
-        }
-
-        private void DrawKeyPoints(Func<double, double, Point> map)
-        {
-            if (trajectory.Count == 0) return;
-
-            // Старт
-            Point startPt = map(0, trajectory[0].Y);
-            Ellipse startMarker = new Ellipse { Width = 10, Height = 10, Fill = Brushes.Red, Stroke = Brushes.White, StrokeThickness = 2 };
-            Canvas.SetLeft(startMarker, startPt.X - 5);
-            Canvas.SetTop(startMarker, startPt.Y - 5);
-            canvasTrajectory.Children.Add(startMarker);
-
-            TextBlock startLabel = new TextBlock { Text = "Катапультирование", FontSize = 8, Foreground = Brushes.Red, FontWeight = FontWeights.Bold };
-            Canvas.SetLeft(startLabel, startPt.X + 8);
-            Canvas.SetTop(startLabel, startPt.Y - 8);
-            canvasTrajectory.Children.Add(startLabel);
-
-            // Раскрытие парашюта
-            var chutePoint = trajectory.FirstOrDefault(p => p.ParachuteDeployed);
-            if (chutePoint != null)
-            {
-                Point chutePt = map(chutePoint.X, chutePoint.Y);
-                Polygon rhombus = new Polygon();
-                rhombus.Points.Add(new Point(chutePt.X, chutePt.Y - 6));
-                rhombus.Points.Add(new Point(chutePt.X + 6, chutePt.Y));
-                rhombus.Points.Add(new Point(chutePt.X, chutePt.Y + 6));
-                rhombus.Points.Add(new Point(chutePt.X - 6, chutePt.Y));
-                rhombus.Fill = Brushes.Gold;
-                rhombus.Stroke = Brushes.Black;
-                rhombus.StrokeThickness = 1;
-                canvasTrajectory.Children.Add(rhombus);
-
-                TextBlock chuteLabel = new TextBlock { Text = $"Раскрытие\n{chutePoint.Time:F1} с", FontSize = 7, Foreground = Brushes.DarkGoldenrod };
-                Canvas.SetLeft(chuteLabel, chutePt.X + 8);
-                Canvas.SetTop(chuteLabel, chutePt.Y - 10);
-                canvasTrajectory.Children.Add(chuteLabel);
-            }
-
-            // Приземление
-            var lastPoint = trajectory.Last();
-            Point endPt = map(lastPoint.X, 0);
-            Rectangle endMarker = new Rectangle { Width = 8, Height = 8, Fill = Brushes.Black };
-            Canvas.SetLeft(endMarker, endPt.X - 4);
-            Canvas.SetTop(endMarker, endPt.Y - 4);
-            canvasTrajectory.Children.Add(endMarker);
-
-            TextBlock endLabel = new TextBlock { Text = $"Приземление\n{lastPoint.X:F0} м", FontSize = 8, Foreground = Brushes.Black, FontWeight = FontWeights.Bold };
-            Canvas.SetLeft(endLabel, endPt.X + 8);
-            Canvas.SetTop(endLabel, endPt.Y - 10);
-            canvasTrajectory.Children.Add(endLabel);
-        }
-
-        private void DrawLegend(double left, double top)
-        {
-            Border legendBorder = new Border
-            {
-                Background = new SolidColorBrush(Color.FromArgb(220, 255, 255, 255)),
-                BorderBrush = Brushes.Gray,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(5),
-                Padding = new Thickness(8),
-                Margin = new Thickness(10)
+                Text = $"Начальная высота: {H0:F0} м",
+                FontSize = 11,
+                Foreground = Brushes.DarkBlue
             };
+            Canvas.SetLeft(infoH, width - 180);
+            Canvas.SetTop(infoH, 10);
+            Canvas3D.Children.Add(infoH);
 
-            StackPanel panel = new StackPanel();
-            panel.Children.Add(new TextBlock { Text = "Легенда", FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 5) });
-
-            StackPanel redItem = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
-            redItem.Children.Add(new Rectangle { Width = 20, Height = 3, Fill = Brushes.Red, Margin = new Thickness(0, 0, 5, 0) });
-            redItem.Children.Add(new TextBlock { Text = "Работа двигателя" });
-            panel.Children.Add(redItem);
-
-            StackPanel blueItem = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
-            blueItem.Children.Add(new Rectangle { Width = 20, Height = 3, Fill = Brushes.DodgerBlue, Margin = new Thickness(0, 0, 5, 0) });
-            blueItem.Children.Add(new TextBlock { Text = "Свободный полёт" });
-            panel.Children.Add(blueItem);
-
-            StackPanel greenItem = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
-            greenItem.Children.Add(new Rectangle { Width = 20, Height = 3, Fill = Brushes.ForestGreen, Margin = new Thickness(0, 0, 5, 0) });
-            greenItem.Children.Add(new TextBlock { Text = "Снижение на парашюте" });
-            panel.Children.Add(greenItem);
-
-            legendBorder.Child = panel;
-            Canvas.SetLeft(legendBorder, left);
-            Canvas.SetTop(legendBorder, top);
-            canvasTrajectory.Children.Add(legendBorder);
+            // Легенда
+            DrawLegend(width);
         }
 
-        private void AddZoomControls()
+        private void DrawGrid(double minX, double maxX, double minY, double maxY,
+                              double width, double height, double margin,
+                              Func<Point, Point> transform)
         {
-            Border panelBorder = new Border
+            double xStep = 20;
+            double yStep = 10;
+
+            // Вертикальные линии сетки и подписи по X
+            for (double x = Math.Ceiling(minX / xStep) * xStep; x <= maxX; x += xStep)
             {
-                Background = new SolidColorBrush(Color.FromArgb(200, 255, 255, 255)),
-                BorderBrush = Brushes.Gray,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(5),
-                Padding = new Thickness(5)
+                Point p1 = transform(new Point(x, minY));
+                Point p2 = transform(new Point(x, maxY));
+
+                // Линия сетки
+                Line line = new Line
+                {
+                    X1 = p1.X,
+                    Y1 = p1.Y,
+                    X2 = p2.X,
+                    Y2 = p2.Y,
+                    Stroke = Brushes.LightGray,
+                    StrokeThickness = 0.5
+                };
+                Canvas3D.Children.Add(line);
+
+                // Подпись значения X
+                TextBlock tb = new TextBlock
+                {
+                    Text = $"{x:F0}",
+                    FontSize = 9,
+                    Foreground = Brushes.Gray
+                };
+                Canvas.SetLeft(tb, p1.X - 15);
+                Canvas.SetTop(tb, height - margin + 5);
+                Canvas3D.Children.Add(tb);
+            }
+
+            // Горизонтальные линии сетки и подписи по Y
+            for (double y = Math.Ceiling(minY / yStep) * yStep; y <= maxY; y += yStep)
+            {
+                Point p1 = transform(new Point(minX, y));
+                Point p2 = transform(new Point(maxX, y));
+
+                // Линия сетки
+                Line line = new Line
+                {
+                    X1 = p1.X,
+                    Y1 = p1.Y,
+                    X2 = p2.X,
+                    Y2 = p2.Y,
+                    Stroke = Brushes.LightGray,
+                    StrokeThickness = 0.5
+                };
+                Canvas3D.Children.Add(line);
+
+                // Подпись значения Y
+                TextBlock tb = new TextBlock
+                {
+                    Text = $"{y:F0}",
+                    FontSize = 9,
+                    Foreground = Brushes.Gray
+                };
+                Canvas.SetLeft(tb, 5);
+                Canvas.SetTop(tb, p1.Y - 8);
+                Canvas3D.Children.Add(tb);
+            }
+
+            // Оси координат
+            Point origin = transform(new Point(0, 0));
+
+            // Ось X
+            Line xAxis = new Line
+            {
+                X1 = margin,
+                Y1 = origin.Y,
+                X2 = width - margin,
+                Y2 = origin.Y,
+                Stroke = Brushes.Black,
+                StrokeThickness = 2
             };
+            Canvas3D.Children.Add(xAxis);
 
-            StackPanel buttonPanel = new StackPanel { Orientation = Orientation.Horizontal };
+            // Стрелка на оси X
+            Polygon xArrow = new Polygon
+            {
+                Points = new PointCollection
+                {
+                    new Point(width - margin, origin.Y),
+                    new Point(width - margin - 8, origin.Y - 4),
+                    new Point(width - margin - 8, origin.Y + 4)
+                },
+                Fill = Brushes.Black
+            };
+            Canvas3D.Children.Add(xArrow);
 
-            Button zoomInBtn = new Button { Content = "➕", Width = 30, Height = 30, FontSize = 16, Margin = new Thickness(2), ToolTip = "Приблизить (сохраняя пропорции)" };
-            Button zoomOutBtn = new Button { Content = "➖", Width = 30, Height = 30, FontSize = 16, Margin = new Thickness(2), ToolTip = "Отдалить" };
-            Button resetBtn = new Button { Content = "⟳", Width = 30, Height = 30, FontSize = 16, Margin = new Thickness(2), ToolTip = "Сбросить масштаб и центрировать" };
+            // Ось Y
+            Line yAxis = new Line
+            {
+                X1 = origin.X,
+                Y1 = margin,
+                X2 = origin.X,
+                Y2 = height - margin,
+                Stroke = Brushes.Black,
+                StrokeThickness = 2
+            };
+            Canvas3D.Children.Add(yAxis);
 
-            zoomInBtn.Click += (s, e) => { scale *= 1.25; DrawTrajectory(); };
-            zoomOutBtn.Click += (s, e) => { scale /= 1.25; DrawTrajectory(); };
-            resetBtn.Click += (s, e) => { scale = 1.0; offsetX = 0; offsetY = 0; DrawTrajectory(); };
+            // Стрелка на оси Y
+            Polygon yArrow = new Polygon
+            {
+                Points = new PointCollection
+                {
+                    new Point(origin.X, margin),
+                    new Point(origin.X - 4, margin + 8),
+                    new Point(origin.X + 4, margin + 8)
+                },
+                Fill = Brushes.Black
+            };
+            Canvas3D.Children.Add(yArrow);
 
-            buttonPanel.Children.Add(zoomInBtn);
-            buttonPanel.Children.Add(zoomOutBtn);
-            buttonPanel.Children.Add(resetBtn);
+            // Подпись "0" в начале координат
+            TextBlock zeroLabel = new TextBlock
+            {
+                Text = "0",
+                FontSize = 9,
+                Foreground = Brushes.Black,
+                FontWeight = System.Windows.FontWeights.Bold
+            };
+            Canvas.SetLeft(zeroLabel, origin.X - 15);
+            Canvas.SetTop(zeroLabel, origin.Y + 5);
+            Canvas3D.Children.Add(zeroLabel);
 
-            panelBorder.Child = buttonPanel;
+            // Подпись уровня самолета
+            TextBlock levelLabel = new TextBlock
+            {
+                Text = "Уровень самолета",
+                FontSize = 9,
+                Foreground = Brushes.DarkGreen,
+                FontStyle = System.Windows.FontStyles.Italic
+            };
+            Canvas.SetLeft(levelLabel, origin.X + 10);
+            Canvas.SetTop(levelLabel, origin.Y - 20);
+            Canvas3D.Children.Add(levelLabel);
+        }
 
-            Canvas.SetRight(panelBorder, 10);
-            Canvas.SetTop(panelBorder, 10);
-            canvasTrajectory.Children.Add(panelBorder);
+        private void DrawAirplane(Point origin, double H0)
+        {
+            // Фюзеляж
+            Rectangle fuselage = new Rectangle
+            {
+                Width = 40,
+                Height = 8,
+                Fill = Brushes.DarkBlue,
+                Stroke = Brushes.Black,
+                StrokeThickness = 1
+            };
+            Canvas.SetLeft(fuselage, origin.X - 20);
+            Canvas.SetTop(fuselage, origin.Y - 4);
+            Canvas3D.Children.Add(fuselage);
+
+            // Киль
+            Polygon fin = new Polygon
+            {
+                Points = new PointCollection
+                {
+                    new Point(origin.X - 15, origin.Y - 4),
+                    new Point(origin.X - 25, origin.Y - 25),
+                    new Point(origin.X - 10, origin.Y - 25),
+                    new Point(origin.X - 5, origin.Y - 4)
+                },
+                Fill = Brushes.LightBlue,
+                Stroke = Brushes.Black,
+                StrokeThickness = 1
+            };
+            Canvas3D.Children.Add(fin);
+
+            // Крылья
+            Line leftWing = new Line
+            {
+                X1 = origin.X - 5,
+                Y1 = origin.Y,
+                X2 = origin.X - 30,
+                Y2 = origin.Y + 15,
+                Stroke = Brushes.DarkBlue,
+                StrokeThickness = 3
+            };
+            Canvas3D.Children.Add(leftWing);
+
+            Line rightWing = new Line
+            {
+                X1 = origin.X + 5,
+                Y1 = origin.Y,
+                X2 = origin.X + 30,
+                Y2 = origin.Y + 15,
+                Stroke = Brushes.DarkBlue,
+                StrokeThickness = 3
+            };
+            Canvas3D.Children.Add(rightWing);
+
+            // Опасная точка киля
+            Ellipse dangerPoint = new Ellipse
+            {
+                Width = 8,
+                Height = 8,
+                Fill = Brushes.Red,
+                Stroke = Brushes.DarkRed,
+                StrokeThickness = 1
+            };
+            Canvas.SetLeft(dangerPoint, origin.X - 18);
+            Canvas.SetTop(dangerPoint, origin.Y - 29);
+            Canvas3D.Children.Add(dangerPoint);
+
+            TextBlock dangerLabel = new TextBlock
+            {
+                Text = "Опасная точка киля",
+                FontSize = 9,
+                Foreground = Brushes.Red,
+                FontWeight = System.Windows.FontWeights.Bold
+            };
+            Canvas.SetLeft(dangerLabel, origin.X - 70);
+            Canvas.SetTop(dangerLabel, origin.Y - 50);
+            Canvas3D.Children.Add(dangerLabel);
+        }
+
+        private void DrawMarker(Point center, Color color, double size, string label)
+        {
+            Ellipse marker = new Ellipse
+            {
+                Width = size,
+                Height = size,
+                Fill = new SolidColorBrush(color),
+                Stroke = Brushes.White,
+                StrokeThickness = 2
+            };
+            Canvas.SetLeft(marker, center.X - size / 2);
+            Canvas.SetTop(marker, center.Y - size / 2);
+            Canvas3D.Children.Add(marker);
+
+            TextBlock tb = new TextBlock
+            {
+                Text = label,
+                FontSize = 10,
+                FontWeight = System.Windows.FontWeights.Bold,
+                Foreground = new SolidColorBrush(color),
+                Background = Brushes.White
+            };
+            Canvas.SetLeft(tb, center.X + 10);
+            Canvas.SetTop(tb, center.Y - 10);
+            Canvas3D.Children.Add(tb);
+        }
+
+        private void DrawLegend(double width)
+        {
+            double x = width - 170;
+            double y = 50;
+
+            Rectangle bg = new Rectangle
+            {
+                Width = 150,
+                Height = 80,
+                Fill = Brushes.White,
+                Stroke = Brushes.Gray,
+                StrokeThickness = 1,
+                Opacity = 0.9
+            };
+            Canvas.SetLeft(bg, x);
+            Canvas.SetTop(bg, y);
+            Canvas3D.Children.Add(bg);
+
+            TextBlock title = new TextBlock
+            {
+                Text = "Легенда",
+                FontWeight = System.Windows.FontWeights.Bold,
+                FontSize = 11
+            };
+            Canvas.SetLeft(title, x + 5);
+            Canvas.SetTop(title, y + 5);
+            Canvas3D.Children.Add(title);
+
+            // Красная линия
+            Line redLine = new Line
+            {
+                X1 = x + 10,
+                Y1 = y + 25,
+                X2 = x + 35,
+                Y2 = y + 25,
+                Stroke = Brushes.Red,
+                StrokeThickness = 3
+            };
+            Canvas3D.Children.Add(redLine);
+
+            TextBlock redLabel = new TextBlock
+            {
+                Text = "Траектория",
+                FontSize = 9
+            };
+            Canvas.SetLeft(redLabel, x + 40);
+            Canvas.SetTop(redLabel, y + 18);
+            Canvas3D.Children.Add(redLabel);
+
+            // Самолет
+            Rectangle plane = new Rectangle
+            {
+                Width = 12,
+                Height = 4,
+                Fill = Brushes.DarkBlue
+            };
+            Canvas.SetLeft(plane, x + 20);
+            Canvas.SetTop(plane, y + 45);
+            Canvas3D.Children.Add(plane);
+
+            TextBlock planeLabel = new TextBlock
+            {
+                Text = "Самолет",
+                FontSize = 9
+            };
+            Canvas.SetLeft(planeLabel, x + 40);
+            Canvas.SetTop(planeLabel, y + 40);
+            Canvas3D.Children.Add(planeLabel);
+
+            // Опасная точка
+            Ellipse danger = new Ellipse
+            {
+                Width = 6,
+                Height = 6,
+                Fill = Brushes.Red
+            };
+            Canvas.SetLeft(danger, x + 23);
+            Canvas.SetTop(danger, y + 62);
+            Canvas3D.Children.Add(danger);
+
+            TextBlock dangerLabel = new TextBlock
+            {
+                Text = "Опасная точка",
+                FontSize = 9
+            };
+            Canvas.SetLeft(dangerLabel, x + 40);
+            Canvas.SetTop(dangerLabel, y + 58);
+            Canvas3D.Children.Add(dangerLabel);
+        }
+
+        private void DrawOxyPlots()
+        {
+            // График скорости
+            var plotV = new PlotModel { Title = "Скорость кресла" };
+            var seriesV = new LineSeries { Color = OxyColor.FromRgb(0, 0, 255), StrokeThickness = 2 };
+            foreach (var s in trajectory)
+                seriesV.Points.Add(new DataPoint(s.Time, Math.Sqrt(s.Vx * s.Vx + s.Vy * s.Vy)));
+            plotV.Series.Add(seriesV);
+            plotV.Axes.Add(new LinearAxis { Position = AxisPosition.Bottom, Title = "Время (с)" });
+            plotV.Axes.Add(new LinearAxis { Position = AxisPosition.Left, Title = "Скорость (м/с)" });
+            PlotVelocity.Model = plotV;
+
+            // График перегрузки
+            var plotN = new PlotModel { Title = "Перегрузка" };
+            var seriesN = new LineSeries { Color = OxyColor.FromRgb(255, 0, 0), StrokeThickness = 2 };
+            for (int i = 1; i < trajectory.Count; i++)
+            {
+                var p = trajectory[i - 1];
+                var c = trajectory[i];
+                double dt = c.Time - p.Time;
+                double ax = (c.Vx - p.Vx) / dt;
+                double ay = (c.Vy - p.Vy) / dt;
+                double a = Math.Sqrt(ax * ax + (ay + g) * (ay + g));
+                seriesN.Points.Add(new DataPoint(c.Time, a / g));
+            }
+            plotN.Series.Add(seriesN);
+
+            // Линия предельной перегрузки (20 ед.)
+            var limit = new LineSeries
+            {
+                Color = OxyColor.FromRgb(255, 165, 0),
+                StrokeThickness = 1,
+                LineStyle = LineStyle.Dash,
+                Title = "Предел (20 ед.)"
+            };
+            limit.Points.Add(new DataPoint(0, 20));
+            limit.Points.Add(new DataPoint(trajectory.Last().Time, 20));
+            plotN.Series.Add(limit);
+
+            plotN.Axes.Add(new LinearAxis { Position = AxisPosition.Bottom, Title = "Время (с)" });
+            plotN.Axes.Add(new LinearAxis { Position = AxisPosition.Left, Title = "Перегрузка (ед.)" });
+            PlotOverload.Model = plotN;
+        }
+
+        // Обработчики мыши для масштабирования и панорамирования
+        private void Canvas3D_MouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            if (trajectory == null) return;
+
+            double zoomDelta = e.Delta > 0 ? 0.1 : -0.1;
+            zoomLevel = Math.Max(0.5, Math.Min(3.0, zoomLevel + zoomDelta));
+            DrawTrajectory(double.Parse(txtVc.Text.Replace(',', '.'), CultureInfo.InvariantCulture));
+        }
+
+        private void Canvas3D_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            isPanning = true;
+            lastMousePos = e.GetPosition(Canvas3D);
+            Canvas3D.CaptureMouse();
+        }
+
+        private void Canvas3D_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            isPanning = false;
+            Canvas3D.ReleaseMouseCapture();
+        }
+
+        private void Canvas3D_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (isPanning && trajectory != null)
+            {
+                Point currentPos = e.GetPosition(Canvas3D);
+                double deltaX = (currentPos.X - lastMousePos.X) / Canvas3D.ActualWidth;
+                double deltaY = (currentPos.Y - lastMousePos.Y) / Canvas3D.ActualHeight;
+
+                panX += deltaX;
+                panY -= deltaY;
+
+                lastMousePos = currentPos;
+                DrawTrajectory(double.Parse(txtVc.Text.Replace(',', '.'), CultureInfo.InvariantCulture));
+            }
+        }
+
+        private void Canvas3D_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            zoomLevel = 1.0;
+            panX = 0;
+            panY = 0;
+            if (trajectory != null)
+                DrawTrajectory(double.Parse(txtVc.Text.Replace(',', '.'), CultureInfo.InvariantCulture));
+        }
+
+        private double GetAirDensity(double h)
+        {
+            // Стандартная атмосфера ГОСТ 4401-81
+            if (h <= 11000)
+            {
+                double T = 288.15 - 0.0065 * h;
+                double P = 101325 * Math.Pow(T / 288.15, 5.2561);
+                return P / (287.05 * T);
+            }
+            else
+            {
+                double T = 216.65;
+                double P = 22632 * Math.Exp(-(h - 11000) / 6341.62);
+                return P / (287.05 * T);
+            }
+        }
+
+        private bool TryParseInputs(out double Vc, out double H, out double pitchDeg, out double M, out double chiDeg,
+                                    out double Jz, out double S_cm, out double L_cm, out double W0, out double T1,
+                                    out double Mz, out double R_gas, out double T_rd, out double t_rd, out double e_rd,
+                                    out double Cx, out double S_mid, out double mz_coef, out double Lk)
+        {
+            Vc = H = pitchDeg = M = chiDeg = Jz = S_cm = L_cm = W0 = T1 = Mz = R_gas = T_rd = t_rd = e_rd = Cx = S_mid = mz_coef = Lk = 0;
+            try
+            {
+                Vc = ParseDouble(txtVc.Text);
+                H = ParseDouble(txtH.Text);
+                pitchDeg = ParseDouble(txtPitch.Text);
+                M = ParseDouble(txtMass.Text);
+                chiDeg = ParseDouble(txtChi.Text);
+                Jz = ParseDouble(txtJz.Text);
+                S_cm = ParseDouble(txtS_cm.Text);
+                L_cm = ParseDouble(txtL_cm.Text);
+                W0 = ParseDouble(txtW0.Text);
+                T1 = ParseDouble(txtT1.Text);
+                Mz = ParseDouble(txtMz.Text);
+                R_gas = ParseDouble(txtR.Text);
+                T_rd = ParseDouble(txtThrust.Text);
+                t_rd = ParseDouble(txtTimeRD.Text);
+                e_rd = ParseDouble(txtEcc.Text);
+                Cx = ParseDouble(txtCx.Text);
+                S_mid = ParseDouble(txtS.Text);
+                mz_coef = ParseDouble(txtMzCoef.Text);
+                Lk = ParseDouble(txtLk.Text);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Ошибка ввода числовых параметров:\n{ex.Message}\n\n" +
+                               "Проверьте, что все числа введены корректно (используйте запятую как разделитель).",
+                               "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
         }
     }
 }
