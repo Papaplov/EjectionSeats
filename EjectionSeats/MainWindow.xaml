@@ -76,6 +76,74 @@
                     </StackPanel>
                 </Expander>
 
+                <Expander Header="СТАБИЛИЗИРУЮЩИЕ ПАРАШЮТЫ" IsExpanded="True" Margin="0,0,0,5">
+                    <StackPanel>
+                        <TextBlock Text="Площадь купола Sсс (м²):"/>
+                        <TextBox x:Name="txtScc" Text="0,5" Margin="0,0,0,5"/>
+                        <TextBlock Text="Коэф. сопр. Cxcc:"/>
+                        <TextBox x:Name="txtCxcc" Text="0,7" Margin="0,0,0,5"/>
+                        <TextBlock Text="Расстояние до штанги Rcc (м):"/>
+                        <TextBox x:Name="txtRcc" Text="1,0" Margin="0,0,0,5"/>
+                    </StackPanel>
+                </Expander>
+                <Expander Header="ОПАСНАЯ ТОЧКА КИЛЯ" IsExpanded="True" Margin="0,0,0,5">
+                    <StackPanel>
+                        <TextBlock Text="Координата Xотк (м):"/>
+                        <TextBox x:Name="txtXotk" Text="-5" Margin="0,0,0,5"/>
+                        <TextBlock Text="Координата Yотк (м):"/>
+                        <TextBox x:Name="txtYotk" Text="3" Margin="0,0,0,5"/>
+                        <TextBlock Text="Координата Zотк (м):"/>
+                        <TextBox x:Name="txtZotk" Text="0" Margin="0,0,0,5"/>
+                    </StackPanel>
+                </Expander>
+                <Expander Header="ДОП. АЭРОДИНАМИКА" IsExpanded="True" Margin="0,0,0,5">
+                    <StackPanel>
+                        <TextBlock Text="Коэф. Cy (при α=0):"/>
+                        <TextBox x:Name="txtCy0" Text="0,3" Margin="0,0,0,5"/>
+                        <TextBlock Text="Коэф. Cz (при α=0):"/>
+                        <TextBox x:Name="txtCz0" Text="0,1" Margin="0,0,0,5"/>
+                    </StackPanel>
+                </Expander>
+
+                <Expander Header="УГЛЫ САМОЛЁТА" IsExpanded="True" Margin="0,0,0,5">
+                    <StackPanel>
+                        <TextBlock Text="Крен (град):"/>
+                        <TextBox x:Name="txtRoll" Text="0" Margin="0,0,0,5"/>
+                        <TextBlock Text="Рыскание (град):"/>
+                        <TextBox x:Name="txtYaw" Text="0" Margin="0,0,0,5"/>
+                    </StackPanel>
+                </Expander>
+
+                <Expander Header="МОМЕНТЫ ИНЕРЦИИ КК" IsExpanded="True" Margin="0,0,0,5">
+                    <StackPanel>
+                        <TextBlock Text="Jx (кг·м²):"/>
+                        <TextBox x:Name="txtJx" Text="200" Margin="0,0,0,5"/>
+                        <TextBlock Text="Jy (кг·м²):"/>
+                        <TextBox x:Name="txtJy" Text="200" Margin="0,0,0,5"/>
+                    </StackPanel>
+                </Expander>
+
+                <Expander Header="ПАРАШЮТНАЯ СИСТЕМА" IsExpanded="True" Margin="0,0,0,5">
+                    <StackPanel>
+                        <TextBlock Text="Время раскрытия (с):"/>
+                        <TextBox x:Name="txtTDeploy" Text="1,5" Margin="0,0,0,5"/>
+                        <TextBlock Text="Площадь купола Sосн (м²):"/>
+                        <TextBox x:Name="txtSmain" Text="60" Margin="0,0,0,5"/>
+                        <TextBlock Text="Коэф. сопр. Cx осн:"/>
+                        <TextBox x:Name="txtCxmain" Text="1,2" Margin="0,0,0,5"/>
+                        <TextBlock Text="Масса пилота (кг):"/>
+                        <TextBox x:Name="txtMpilot" Text="100" Margin="0,0,0,5"/>
+                        <TextBlock Text="Время раскрытия купола (с):"/>
+                        <TextBox x:Name="txtTDeployRamp" Text="0,5" Margin="0,0,0,5"/>
+                        <TextBlock Text="Время симуляции (с):"/>
+                        <TextBox x:Name="txtSimTime" Text="10" Margin="0,0,0,5"/>
+                    </StackPanel>
+                </Expander>
+                
+                <!-- В конец панели с результатами (после txtMaxHeight) добавьте: -->
+                <TextBlock x:Name="txtMinDistance" Text="Мин. расстояние до киля: --" 
+           FontWeight="Bold" Foreground="Purple" TextWrapping="Wrap" Margin="0,5,0,0"/>
+
                 <Button x:Name="btnCalculate" Content="ЗАПУСТИТЬ МОДЕЛИРОВАНИЕ" 
                         Height="40" Background="LightGreen" FontWeight="Bold" 
                         Click="BtnCalculate_Click" Margin="0,10,0,0"/>
