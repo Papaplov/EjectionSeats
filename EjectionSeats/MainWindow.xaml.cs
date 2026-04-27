@@ -11,6 +11,8 @@ using System.Windows.Shapes;
 using OxyPlot;
 using OxyPlot.Series;
 using OxyPlot.Axes;
+using Npgsql;
+using System.Text.Json;
 
 namespace EjectionSeats
 {
@@ -33,6 +35,9 @@ namespace EjectionSeats
         private bool isPanning;
         private Point lastMousePos;
 
+        // Строка подключения к PostgreSQL (замените параметры на свои)
+        private const string connectionString = "Host=localhost;Port=5432;Database=EjectionSeatsDB;Username=postgres;Password=Passw0rd";
+
         public MainWindow()
         {
             InitializeComponent();
@@ -42,6 +47,9 @@ namespace EjectionSeats
             Canvas3D.MouseLeftButtonUp += Canvas3D_MouseLeftButtonUp;
             Canvas3D.MouseMove += Canvas3D_MouseMove;
             Canvas3D.MouseRightButtonDown += Canvas3D_MouseRightButtonDown;
+
+            // Загрузка списка кресел из БД
+            LoadSeats();
         }
 
         private double ParseDouble(string s) =>
@@ -127,6 +135,7 @@ namespace EjectionSeats
             }
         }
 
+        // ================== РАСЧЁТ ТРАЕКТОРИИ ==================
         private void CalculateTrajectory(InputParams p)
         {
             double chi = p.chiDeg * Math.PI / 180.0;
@@ -134,8 +143,8 @@ namespace EjectionSeats
             double roll = p.rollDeg * Math.PI / 180.0;
             double yaw = p.yawDeg * Math.PI / 180.0;
 
-            // Начальная скорость кресла (раздел 2.1.6 пособия)
-            double Vcm = 15.0; // скорость от СМ, можно вынести в поле
+            // Начальная скорость по рис. 2.5 пособия: вверх-назад
+            double Vcm = 15.0; // фиксированная скорость СМ (можно добавить в параметры)
             double Vx0 = p.Vc - Vcm * Math.Sin(chi + pitch);
             double Vy0 = Vcm * Math.Cos(chi + pitch);
             double Vz0 = 0;
@@ -164,7 +173,7 @@ namespace EjectionSeats
             double dt = 0.01, maxOverload = 0;
             bool deployed = false;
             double landingSpeed = 0;
-            double totalTime = p.simTime;   // вместо 60.0
+            double totalTime = p.simTime; // ограничение по времени из интерфейса
 
             for (double t = 0; t < totalTime; t += dt)
             {
@@ -184,14 +193,14 @@ namespace EjectionSeats
                 double F_rd = 0;
                 double dragForce = 0;
                 double aeroForceX = 0, aeroForceY = 0, aeroForceZ = 0;
-                double Fcc = 0;   // объявлена здесь
+                double Fcc = 0; // переменная для момента от стаб. парашютов
 
                 if (!current.IsDeployed)
                 {
                     // Реактивный ускоритель
                     F_rd = (t <= p.t_rd) ? p.T_rd : 0;
 
-                    // Лобовое сопротивление кресла
+                    // Аэродинамическое сопротивление кресла
                     double Cx_eff = p.Cx * K;
                     dragForce = 0.5 * rho * Cx_eff * p.S_mid * V_abs * V_abs;
                     double invV = 1.0 / V_abs_clamp;
@@ -199,7 +208,7 @@ namespace EjectionSeats
                     aeroForceY = -dragForce * current.Vy * invV;
                     aeroForceZ = -dragForce * current.Vz * invV;
 
-                    // Стабилизирующие парашюты (два купола)
+                    // Стабилизирующие парашюты (два)
                     Fcc = 0.5 * rho * p.Scc * p.Cxcc * V_abs * V_abs;
                     aeroForceX -= 2 * Fcc * current.Vx * invV;
                     aeroForceY -= 2 * Fcc * current.Vy * invV;
@@ -207,10 +216,10 @@ namespace EjectionSeats
                 }
                 else
                 {
-                    // Фаза основного парашюта
+                    // Фаза основного парашюта с плавным раскрытием
                     double timeSinceDeploy = t - p.t_deploy;
                     double fraction = Math.Min(1.0, timeSinceDeploy / p.t_deploy_ramp);
-                    double effArea = fraction * p.S_main;                     // всегда ≥ 0
+                    double effArea = fraction * p.S_main;
                     dragForce = 0.5 * rho * p.Cx_main * effArea * V_abs * V_abs;
                     double invV = 1.0 / V_abs_clamp;
                     aeroForceX = -dragForce * current.Vx * invV;
@@ -218,7 +227,7 @@ namespace EjectionSeats
                     aeroForceZ = -dragForce * current.Vz * invV;
                 }
 
-                // Суммарные силы
+                // Суммарные силы (тяга РД вдоль оси кресла)
                 double Fx = F_rd * Math.Cos(current.Psi) + aeroForceX;
                 double Fy = F_rd * Math.Sin(current.Psi) + aeroForceY - M_eff * g;
                 double Fz = aeroForceZ;
@@ -227,7 +236,7 @@ namespace EjectionSeats
                 double ay = Fy / M_eff;
                 double az = Fz / M_eff;
 
-                // Моменты (упрощённо)
+                // Моменты
                 double epsX = 0, epsY = 0, epsZ = 0;
                 if (!current.IsDeployed)
                 {
@@ -287,7 +296,7 @@ namespace EjectionSeats
                     dangerTrajectory.Add(new Point3D(p.Xotk + p.Vc * current.Time, p.Yotk, p.Zotk));
                 }
 
-                // Диагностика в реальном времени (обновляем не каждый шаг, а раз в 20 шагов)
+                // Диагностика
                 if (current.IsDeployed && Math.Abs(current.Time % 0.2) < dt)
                 {
                     txtStatus.Text = $"Парашют: t={current.Time:F1}с, Vx={current.Vx:F1}, Vy={current.Vy:F1}";
@@ -312,6 +321,177 @@ namespace EjectionSeats
             txtMinDistance.Text = $"Мин. расстояние до киля: {minDist:F2} м";
         }
 
+        // ================== БАЗА ДАННЫХ ==================
+        private void LoadSeats()
+        {
+            try
+            {
+                cmbSeats.Items.Clear();
+                using (var conn = new NpgsqlConnection(connectionString))
+                {
+                    conn.Open();
+                    using (var cmd = new NpgsqlCommand("SELECT id, model_name FROM seats ORDER BY model_name", conn))
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            cmbSeats.Items.Add(new { Id = reader.GetInt32(0), Name = reader.GetString(1) });
+                        }
+                    }
+                }
+                cmbSeats.DisplayMemberPath = "Name";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Ошибка загрузки кресел из БД: {ex.Message}", "БД", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        private void CmbSeats_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            BtnLoadFromDb_Click(sender, null);
+        }
+
+        private void BtnLoadFromDb_Click(object sender, RoutedEventArgs e)
+        {
+            if (cmbSeats.SelectedItem == null) return;
+            dynamic selected = cmbSeats.SelectedItem;
+            int seatId = selected.Id;
+
+            try
+            {
+                using (var conn = new NpgsqlConnection(connectionString))
+                {
+                    conn.Open();
+                    string query = @"
+                        SELECT s.mass_kg, s.angle_installation_deg, s.seat_height_m, s.cx, s.cy0, s.cz0,
+                               s.midel_area_m2, s.mz_coefficient, s.moment_inertia_x, s.moment_inertia_y, s.moment_inertia_z,
+                               ps.stabilization_area_m2, ps.stabilization_cx, ps.main_area_m2, ps.main_cx,
+                               ps.deploy_time_ramp, ps.distance_to_attachment_m,
+                               re.thrust_n, re.work_time_s, re.eccentricity_m, re.angle_deg,
+                               fm.piston_area_m2, fm.stroke_m, fm.initial_volume_m3, fm.gas_temperature_k,
+                               fm.charge_mass_kg, fm.gas_constant
+                        FROM seats s
+                        JOIN parachute_systems ps ON s.parachute_system_id = ps.id
+                        JOIN rocket_engines re ON s.rocket_engine_id = re.id
+                        JOIN firing_mechanisms fm ON s.firing_mechanism_id = fm.id
+                        WHERE s.id = @id";
+                    using (var cmd = new NpgsqlCommand(query, conn))
+                    {
+                        cmd.Parameters.AddWithValue("id", seatId);
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            if (reader.Read())
+                            {
+                                txtMass.Text = reader.GetDouble(0).ToString("F1");
+                                txtChi.Text = reader.GetDouble(1).ToString("F1");
+                                txtLk.Text = reader.GetDouble(2).ToString("F2");
+                                txtCx.Text = reader.GetDouble(3).ToString("F2");
+                                txtCy0.Text = reader.GetDouble(4).ToString("F2");
+                                txtCz0.Text = reader.GetDouble(5).ToString("F2");
+                                txtS.Text = reader.GetDouble(6).ToString("F2");
+                                txtMzCoef.Text = reader.GetDouble(7).ToString("F2");
+                                txtJx.Text = reader.GetDouble(8).ToString("F1");
+                                txtJy.Text = reader.GetDouble(9).ToString("F1");
+                                txtJz.Text = reader.GetDouble(10).ToString("F1");
+                                txtScc.Text = reader.GetDouble(11).ToString("F2");
+                                txtCxcc.Text = reader.GetDouble(12).ToString("F2");
+                                txtSmain.Text = reader.GetDouble(13).ToString("F1");
+                                txtCxmain.Text = reader.GetDouble(14).ToString("F2");
+                                txtTDeployRamp.Text = reader.GetDouble(15).ToString("F1");
+                                txtRcc.Text = reader.GetDouble(16).ToString("F2");
+                                txtThrust.Text = reader.GetDouble(17).ToString("F0");
+                                txtTimeRD.Text = reader.GetDouble(18).ToString("F2");
+                                txtEcc.Text = reader.GetDouble(19).ToString("F2");
+                                txtS_cm.Text = reader.GetDouble(21).ToString("F3");
+                                txtL_cm.Text = reader.GetDouble(22).ToString("F2");
+                                txtW0.Text = reader.GetDouble(23).ToString("F4");
+                                txtT1.Text = reader.GetDouble(24).ToString("F0");
+                                txtMz.Text = reader.GetDouble(25).ToString("F3");
+                                txtR.Text = reader.GetDouble(26).ToString("F1");
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Ошибка загрузки параметров: {ex.Message}", "БД", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void BtnSaveSimulation_Click(object sender, RoutedEventArgs e)
+        {
+            if (trajectory == null || trajectory.Count < 2)
+            {
+                MessageBox.Show("Нет данных симуляции.");
+                return;
+            }
+            if (cmbSeats.SelectedItem == null)
+            {
+                MessageBox.Show("Выберите кресло для сохранения.");
+                return;
+            }
+            dynamic selected = cmbSeats.SelectedItem;
+            int seatId = selected.Id;
+
+            var parameters = new
+            {
+                Vc = txtVc.Text,
+                H = txtH.Text,
+                pitch = txtPitch.Text,
+                roll = txtRoll.Text,
+                yaw = txtYaw.Text,
+                mass = txtMass.Text,
+                // ... можно добавить все поля
+            };
+            string jsonParams = JsonSerializer.Serialize(parameters);
+
+            // Вычисление максимальной перегрузки (упрощённо)
+            double maxOverload = 0;
+            for (int i = 1; i < trajectory.Count; i++)
+            {
+                var p = trajectory[i - 1];
+                var c = trajectory[i];
+                double dt = c.Time - p.Time;
+                double ax = (c.Vx - p.Vx) / dt;
+                double ay = (c.Vy - p.Vy) / dt;
+                double az = (c.Vz - p.Vz) / dt;
+                double a = Math.Sqrt(ax * ax + (ay + g) * (ay + g) + az * az);
+                double n = a / g;
+                if (n > maxOverload) maxOverload = n;
+            }
+            double maxHeight = trajectory.Max(s => s.Y);
+            double landingSpeed = Math.Sqrt(trajectory.Last().Vx * trajectory.Last().Vx +
+                                           trajectory.Last().Vy * trajectory.Last().Vy +
+                                           trajectory.Last().Vz * trajectory.Last().Vz);
+
+            try
+            {
+                using (var conn = new NpgsqlConnection(connectionString))
+                {
+                    conn.Open();
+                    using (var cmd = new NpgsqlCommand(
+                        @"INSERT INTO simulations (seat_id, input_parameters, max_overload, max_height_m, landing_speed_ms)
+                          VALUES (@seatId, @params::jsonb, @overload, @height, @speed)", conn))
+                    {
+                        cmd.Parameters.AddWithValue("seatId", seatId);
+                        cmd.Parameters.AddWithValue("params", jsonParams);
+                        cmd.Parameters.AddWithValue("overload", maxOverload);
+                        cmd.Parameters.AddWithValue("height", maxHeight);
+                        cmd.Parameters.AddWithValue("speed", landingSpeed);
+                        cmd.ExecuteNonQuery();
+                    }
+                }
+                MessageBox.Show("Симуляция сохранена в БД.");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Ошибка сохранения: {ex.Message}", "БД", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==================
         private double GetSoundSpeed(double h)
         {
             double T = (h <= 11000) ? 288.15 - 0.0065 * h : 216.65;
@@ -523,8 +703,8 @@ namespace EjectionSeats
             for (int i = 1; i < trajectory.Count; i++)
             {
                 var prev = trajectory[i - 1]; var curr = trajectory[i];
-                double dt_local = curr.Time - prev.Time;
-                double ax = (curr.Vx - prev.Vx) / dt_local, ay = (curr.Vy - prev.Vy) / dt_local, az = (curr.Vz - prev.Vz) / dt_local;
+                double dt = curr.Time - prev.Time;
+                double ax = (curr.Vx - prev.Vx) / dt, ay = (curr.Vy - prev.Vy) / dt, az = (curr.Vz - prev.Vz) / dt;
                 double a = Math.Sqrt(ax * ax + (ay + g) * (ay + g) + az * az);
                 seriesN.Points.Add(new DataPoint(curr.Time, a / g));
             }
@@ -534,6 +714,7 @@ namespace EjectionSeats
             PlotOverload.Model = plotN;
         }
 
+        // Обработчики мыши
         private void Canvas3D_MouseWheel(object sender, MouseWheelEventArgs e)
         {
             zoomLevel = Math.Max(0.5, Math.Min(3.0, zoomLevel + (e.Delta > 0 ? 0.1 : -0.1)));

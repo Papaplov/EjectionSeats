@@ -20,6 +20,7 @@
                         <TextBox x:Name="txtH" Text="2000" Margin="0,0,0,5"/>
                         <TextBlock Text="Угол тангажа (град):"/>
                         <TextBox x:Name="txtPitch" Text="0" Margin="0,0,0,5"/>
+                        
                     </StackPanel>
                 </Expander>
 
@@ -140,6 +141,17 @@
                     </StackPanel>
                 </Expander>
                 
+                <Expander Header="БАЗА ДАННЫХ" IsExpanded="True" Margin="0,0,0,5">
+                    <StackPanel>
+                        <TextBlock Text="Катапультное кресло:"/>
+                        <ComboBox x:Name="cmbSeats" SelectionChanged="CmbSeats_SelectionChanged" Margin="0,0,0,5"/>
+                        <Button x:Name="btnLoadFromDb" Content="Загрузить параметры" Click="BtnLoadFromDb_Click" 
+                Background="LightCoral" Margin="0,0,0,5"/>
+                        <Button x:Name="btnSaveSimulation" Content="Сохранить симуляцию" Click="BtnSaveSimulation_Click" 
+                Background="LightBlue"/>
+                    </StackPanel>
+                </Expander>
+
                 <!-- В конец панели с результатами (после txtMaxHeight) добавьте: -->
                 <TextBlock x:Name="txtMinDistance" Text="Мин. расстояние до киля: --" 
            FontWeight="Bold" Foreground="Purple" TextWrapping="Wrap" Margin="0,5,0,0"/>
