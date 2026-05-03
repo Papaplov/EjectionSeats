@@ -5,18 +5,28 @@
         WindowStartupLocation="CenterScreen" ResizeMode="NoResize">
     <Grid Margin="20">
         <Grid.RowDefinitions>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
-        <TextBlock Text="Логин:" VerticalAlignment="Top" Margin="0,-7,0,0"/>
-        <TextBox x:Name="txtLogin" Grid.Row="0" Margin="0,5,0,0" Height="25"/>
-        <TextBlock Text="Пароль:" VerticalAlignment="Top" Margin="0,42,0,0" Grid.RowSpan="2"/>
-        <PasswordBox x:Name="txtPassword" Grid.Row="1" Margin="0,5,0,0" Height="25"/>
-        <Button x:Name="btnLogin" Content="Войти" Grid.Row="2" Height="30" Width="100" 
-                HorizontalAlignment="Center" Click="BtnLogin_Click"/>
-        <TextBlock x:Name="txtError" Grid.Row="3" Foreground="Red" TextWrapping="Wrap"/>
+
+        <!-- Логин -->
+        <TextBlock Text="Логин:" Grid.Row="0" Margin="0,0,0,5"/>
+        <TextBox x:Name="txtLogin" Grid.Row="1" Height="25" Margin="0,0,0,10"/>
+
+        <!-- Пароль -->
+        <TextBlock Text="Пароль:" Grid.Row="2" Margin="0,0,0,5"/>
+        <PasswordBox x:Name="txtPassword" Grid.Row="3" Height="25" Margin="0,0,0,15"/>
+
+        <!-- Кнопка -->
+        <Button x:Name="btnLogin" Content="Войти" Grid.Row="4" Height="30" Width="100"
+                HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,5,0,0"
+                Click="BtnLogin_Click"/>
+
+        <!-- Сообщение об ошибке -->
+        <TextBlock x:Name="txtError" Grid.Row="4" Foreground="Red" TextWrapping="Wrap"
+                   VerticalAlignment="Bottom" Margin="0,0,0,5"/>
     </Grid>
 </Window>
