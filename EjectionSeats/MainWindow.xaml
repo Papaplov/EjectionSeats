@@ -27,7 +27,7 @@
                 <Expander Header="КАТАПУЛЬТНОЕ КРЕСЛО" IsExpanded="True" Margin="0,0,0,5">
                     <StackPanel>
                         <TextBlock Text="Масса M (кг):"/>
-                        <TextBox x:Name="txtMass" Text="140" Margin="0,0,0,5"/>
+                        <TextBox x:Name="txtMass" Text="200" Margin="0,0,0,5"/>
                         <TextBlock Text="Угол установки χ (град):"/>
                         <TextBox x:Name="txtChi" Text="17" Margin="0,0,0,5"/>
                         <TextBlock Text="Момент инерции Jz (кг·м²):"/>
@@ -80,7 +80,7 @@
                 <Expander Header="СТАБИЛИЗИРУЮЩИЕ ПАРАШЮТЫ" IsExpanded="True" Margin="0,0,0,5">
                     <StackPanel>
                         <TextBlock Text="Площадь купола Sсс (м²):"/>
-                        <TextBox x:Name="txtScc" Text="0,5" Margin="0,0,0,5"/>
+                        <TextBox x:Name="txtScc" Text="0,06" Margin="0,0,0,5"/>
                         <TextBlock Text="Коэф. сопр. Cxcc:"/>
                         <TextBox x:Name="txtCxcc" Text="0,7" Margin="0,0,0,5"/>
                         <TextBlock Text="Расстояние до штанги Rcc (м):"/>
@@ -149,6 +149,8 @@
                 Background="LightCoral" Margin="0,0,0,5"/>
                         <Button x:Name="btnSaveSimulation" Content="Сохранить симуляцию" Click="BtnSaveSimulation_Click" 
                 Background="LightBlue"/>
+                        <Button x:Name="btnRefreshSeats" Content="Обновить список" Click="BtnRefreshSeats_Click" 
+        Background="LightGray" Margin="0,0,0,5"/>
                     </StackPanel>
                 </Expander>
 

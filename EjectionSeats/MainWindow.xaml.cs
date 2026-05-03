@@ -35,13 +35,25 @@ namespace EjectionSeats
         private bool isPanning;
         private Point lastMousePos;
 
+        // Данные текущего пользователя
+        private string currentRole = "viewer";   // по умолчанию наблюдатель
+        private int currentUserId = 0;
+
         // Строка подключения к PostgreSQL (замените параметры на свои)
         private const string connectionString = "Host=localhost;Port=5432;Database=EjectionSeatsDB;Username=postgres;Password=Passw0rd";
 
-        public MainWindow()
+        // Конструктор по умолчанию (для совместимости, если кто-то вызовет без параметров)
+        public MainWindow() : this("viewer", 0) { }
+
+        // Основной конструктор с ролью и ID пользователя
+        public MainWindow(string roleCode, int userId)
         {
             InitializeComponent();
+            currentRole = roleCode;
+            currentUserId = userId;
             Thread.CurrentThread.CurrentCulture = new CultureInfo("ru-RU");
+
+            // Привязка мыши
             Canvas3D.MouseWheel += Canvas3D_MouseWheel;
             Canvas3D.MouseLeftButtonDown += Canvas3D_MouseLeftButtonDown;
             Canvas3D.MouseLeftButtonUp += Canvas3D_MouseLeftButtonUp;
@@ -50,6 +62,32 @@ namespace EjectionSeats
 
             // Загрузка списка кресел из БД
             LoadSeats();
+            // Применение ограничений в зависимости от роли
+            ApplyRoleRestrictions();
+        }
+
+        /// <summary>
+        /// Скрывает или отключает элементы интерфейса в зависимости от роли пользователя.
+        /// </summary>
+        private void ApplyRoleRestrictions()
+        {
+            // Администратор имеет полный доступ – ничего не отключаем
+            if (currentRole == "admin") return;
+
+            // Инженер-исследователь может всё, кроме сохранения симуляций (только админ)
+            if (currentRole == "engineer")
+            {
+                btnSaveSimulation.IsEnabled = false;
+                return;
+            }
+
+            // Наблюдатель: только просмотр справочников и загрузка параметров, запуск расчёта запрещён
+            if (currentRole == "viewer")
+            {
+                btnCalculate.IsEnabled = false;
+                btnSaveSimulation.IsEnabled = false;
+                // Можно также заблокировать изменение полей, но оставим для наглядности
+            }
         }
 
         private double ParseDouble(string s) =>
@@ -115,6 +153,7 @@ namespace EjectionSeats
                 p.mz_coef = ParseDouble(txtMzCoef.Text);
                 p.Lk = ParseDouble(txtLk.Text);
                 p.Scc = ParseDouble(txtScc.Text);
+                if (p.Scc > 0.1) p.Scc = 0.06;
                 p.Cxcc = ParseDouble(txtCxcc.Text);
                 p.Rcc = ParseDouble(txtRcc.Text);
                 p.Xotk = ParseDouble(txtXotk.Text);
@@ -143,8 +182,7 @@ namespace EjectionSeats
             double roll = p.rollDeg * Math.PI / 180.0;
             double yaw = p.yawDeg * Math.PI / 180.0;
 
-            // Начальная скорость по рис. 2.5 пособия: вверх-назад
-            double Vcm = 15.0; // фиксированная скорость СМ (можно добавить в параметры)
+            double Vcm = 15.0;
             double Vx0 = p.Vc - Vcm * Math.Sin(chi + pitch);
             double Vy0 = Vcm * Math.Cos(chi + pitch);
             double Vz0 = 0;
@@ -173,7 +211,7 @@ namespace EjectionSeats
             double dt = 0.01, maxOverload = 0;
             bool deployed = false;
             double landingSpeed = 0;
-            double totalTime = p.simTime; // ограничение по времени из интерфейса
+            double totalTime = p.simTime;
 
             for (double t = 0; t < totalTime; t += dt)
             {
@@ -193,14 +231,12 @@ namespace EjectionSeats
                 double F_rd = 0;
                 double dragForce = 0;
                 double aeroForceX = 0, aeroForceY = 0, aeroForceZ = 0;
-                double Fcc = 0; // переменная для момента от стаб. парашютов
+                double Fcc = 0;
 
                 if (!current.IsDeployed)
                 {
-                    // Реактивный ускоритель
                     F_rd = (t <= p.t_rd) ? p.T_rd : 0;
 
-                    // Аэродинамическое сопротивление кресла
                     double Cx_eff = p.Cx * K;
                     dragForce = 0.5 * rho * Cx_eff * p.S_mid * V_abs * V_abs;
                     double invV = 1.0 / V_abs_clamp;
@@ -208,7 +244,6 @@ namespace EjectionSeats
                     aeroForceY = -dragForce * current.Vy * invV;
                     aeroForceZ = -dragForce * current.Vz * invV;
 
-                    // Стабилизирующие парашюты (два)
                     Fcc = 0.5 * rho * p.Scc * p.Cxcc * V_abs * V_abs;
                     aeroForceX -= 2 * Fcc * current.Vx * invV;
                     aeroForceY -= 2 * Fcc * current.Vy * invV;
@@ -216,7 +251,6 @@ namespace EjectionSeats
                 }
                 else
                 {
-                    // Фаза основного парашюта с плавным раскрытием
                     double timeSinceDeploy = t - p.t_deploy;
                     double fraction = Math.Min(1.0, timeSinceDeploy / p.t_deploy_ramp);
                     double effArea = fraction * p.S_main;
@@ -227,7 +261,6 @@ namespace EjectionSeats
                     aeroForceZ = -dragForce * current.Vz * invV;
                 }
 
-                // Суммарные силы (тяга РД вдоль оси кресла)
                 double Fx = F_rd * Math.Cos(current.Psi) + aeroForceX;
                 double Fy = F_rd * Math.Sin(current.Psi) + aeroForceY - M_eff * g;
                 double Fz = aeroForceZ;
@@ -236,7 +269,6 @@ namespace EjectionSeats
                 double ay = Fy / M_eff;
                 double az = Fz / M_eff;
 
-                // Моменты
                 double epsX = 0, epsY = 0, epsZ = 0;
                 if (!current.IsDeployed)
                 {
@@ -252,7 +284,6 @@ namespace EjectionSeats
                 double n = a_total / g;
                 if (n > maxOverload) maxOverload = n;
 
-                // Интегрирование
                 StateVector next = new StateVector
                 {
                     Time = current.Time + dt,
@@ -296,7 +327,6 @@ namespace EjectionSeats
                     dangerTrajectory.Add(new Point3D(p.Xotk + p.Vc * current.Time, p.Yotk, p.Zotk));
                 }
 
-                // Диагностика
                 if (current.IsDeployed && Math.Abs(current.Time % 0.2) < dt)
                 {
                     txtStatus.Text = $"Парашют: t={current.Time:F1}с, Vx={current.Vx:F1}, Vy={current.Vy:F1}";
@@ -364,18 +394,21 @@ namespace EjectionSeats
                 {
                     conn.Open();
                     string query = @"
-                        SELECT s.mass_kg, s.angle_installation_deg, s.seat_height_m, s.cx, s.cy0, s.cz0,
-                               s.midel_area_m2, s.mz_coefficient, s.moment_inertia_x, s.moment_inertia_y, s.moment_inertia_z,
-                               ps.stabilization_area_m2, ps.stabilization_cx, ps.main_area_m2, ps.main_cx,
-                               ps.deploy_time_ramp, ps.distance_to_attachment_m,
-                               re.thrust_n, re.work_time_s, re.eccentricity_m, re.angle_deg,
-                               fm.piston_area_m2, fm.stroke_m, fm.initial_volume_m3, fm.gas_temperature_k,
-                               fm.charge_mass_kg, fm.gas_constant
-                        FROM seats s
-                        JOIN parachute_systems ps ON s.parachute_system_id = ps.id
-                        JOIN rocket_engines re ON s.rocket_engine_id = re.id
-                        JOIN firing_mechanisms fm ON s.firing_mechanism_id = fm.id
-                        WHERE s.id = @id";
+                SELECT s.mass_kg, s.angle_installation_deg, s.seat_height_m, s.cx, s.cy0, s.cz0,
+                       s.midel_area_m2, s.mz_coefficient, s.moment_inertia_x, s.moment_inertia_y, s.moment_inertia_z,
+                       ps.stabilization_area_m2, ps.stabilization_cx, ps.main_area_m2, ps.main_cx,
+                       ps.deploy_time_ramp, ps.distance_to_attachment_m,
+                       re.thrust_n, re.work_time_s, re.eccentricity_m, re.angle_deg,
+                       fm.piston_area_m2, fm.stroke_m, fm.initial_volume_m3, fm.gas_temperature_k,
+                       fm.charge_mass_kg, fm.gas_constant
+                FROM seats s
+                JOIN seat_parachute sp ON s.id = sp.seat_id
+                    JOIN parachute_systems ps ON sp.parachute_system_id = ps.id
+                JOIN seat_engine se ON s.id = se.seat_id
+                    JOIN rocket_engines re ON se.rocket_engine_id = re.id
+                JOIN seat_firing sf ON s.id = sf.seat_id
+                    JOIN firing_mechanisms fm ON sf.firing_mechanism_id = fm.id
+                WHERE s.id = @id";
                     using (var cmd = new NpgsqlCommand(query, conn))
                     {
                         cmd.Parameters.AddWithValue("id", seatId);
@@ -420,6 +453,12 @@ namespace EjectionSeats
             }
         }
 
+        private void BtnRefreshSeats_Click(object sender, RoutedEventArgs e)
+        {
+            LoadSeats();
+            MessageBox.Show("Список кресел обновлён.", "БД", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
         private void BtnSaveSimulation_Click(object sender, RoutedEventArgs e)
         {
             if (trajectory == null || trajectory.Count < 2)
@@ -443,20 +482,18 @@ namespace EjectionSeats
                 roll = txtRoll.Text,
                 yaw = txtYaw.Text,
                 mass = txtMass.Text,
-                // ... можно добавить все поля
             };
             string jsonParams = JsonSerializer.Serialize(parameters);
 
-            // Вычисление максимальной перегрузки (упрощённо)
             double maxOverload = 0;
             for (int i = 1; i < trajectory.Count; i++)
             {
-                var p = trajectory[i - 1];
-                var c = trajectory[i];
-                double dt = c.Time - p.Time;
-                double ax = (c.Vx - p.Vx) / dt;
-                double ay = (c.Vy - p.Vy) / dt;
-                double az = (c.Vz - p.Vz) / dt;
+                var prev = trajectory[i - 1];
+                var curr = trajectory[i];
+                double dt = curr.Time - prev.Time;
+                double ax = (curr.Vx - prev.Vx) / dt;
+                double ay = (curr.Vy - prev.Vy) / dt;
+                double az = (curr.Vz - prev.Vz) / dt;
                 double a = Math.Sqrt(ax * ax + (ay + g) * (ay + g) + az * az);
                 double n = a / g;
                 if (n > maxOverload) maxOverload = n;
@@ -472,10 +509,11 @@ namespace EjectionSeats
                 {
                     conn.Open();
                     using (var cmd = new NpgsqlCommand(
-                        @"INSERT INTO simulations (seat_id, input_parameters, max_overload, max_height_m, landing_speed_ms)
-                          VALUES (@seatId, @params::jsonb, @overload, @height, @speed)", conn))
+                        @"INSERT INTO simulations (seat_id, user_id, input_parameters, max_overload, max_height_m, landing_speed_ms)
+                          VALUES (@seatId, @userId, @params::jsonb, @overload, @height, @speed)", conn))
                     {
                         cmd.Parameters.AddWithValue("seatId", seatId);
+                        cmd.Parameters.AddWithValue("userId", currentUserId);   // привязка к текущему пользователю
                         cmd.Parameters.AddWithValue("params", jsonParams);
                         cmd.Parameters.AddWithValue("overload", maxOverload);
                         cmd.Parameters.AddWithValue("height", maxHeight);

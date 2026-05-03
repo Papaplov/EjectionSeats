@@ -1,0 +1,22 @@
+﻿<Window x:Class="EjectionSeats.LoginWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Вход в систему" Height="250" Width="350" 
+        WindowStartupLocation="CenterScreen" ResizeMode="NoResize">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <TextBlock Text="Логин:" VerticalAlignment="Top" Margin="0,-7,0,0"/>
+        <TextBox x:Name="txtLogin" Grid.Row="0" Margin="0,5,0,0" Height="25"/>
+        <TextBlock Text="Пароль:" VerticalAlignment="Top" Margin="0,42,0,0" Grid.RowSpan="2"/>
+        <PasswordBox x:Name="txtPassword" Grid.Row="1" Margin="0,5,0,0" Height="25"/>
+        <Button x:Name="btnLogin" Content="Войти" Grid.Row="2" Height="30" Width="100" 
+                HorizontalAlignment="Center" Click="BtnLogin_Click"/>
+        <TextBlock x:Name="txtError" Grid.Row="3" Foreground="Red" TextWrapping="Wrap"/>
+    </Grid>
+</Window>
